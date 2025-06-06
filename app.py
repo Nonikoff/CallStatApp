@@ -12,6 +12,7 @@ app = Flask(__name__)
 # Database configuration
 db_config = {
     'host': os.getenv('DB_HOST'),
+    'port': int(os.getenv('DB_PORT', 3306)),
     'user': os.getenv('DB_USER'),
     'password': os.getenv('DB_PASSWORD'),
     'db': os.getenv('DB_NAME'),
@@ -48,6 +49,7 @@ def get_call_stats(token):
 
     try:
         # Connect to the database
+        app.logger.info(f"Connecting to database at {db_config['host']}:{db_config['port']}")
         connection = get_connection()
         with connection.cursor() as cursor:
             # Execute the query
@@ -79,7 +81,11 @@ def get_call_stats(token):
 
             return jsonify(results)
 
+
     except Exception as e:
+
+        app.logger.error(f"Database error: {str(e)}")
+
         return jsonify({'error': str(e)}), 500
 
     finally:
