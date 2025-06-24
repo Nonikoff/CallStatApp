@@ -78,22 +78,28 @@ def query_database(db_config, date_param):
     try:
         with connection.cursor() as cursor:
             query = """
-            SELECT
-                cnum,
-                IFNULL(cnam, '') as cnam,
-                COUNT(DISTINCT dst) AS unique_calls,
-                COUNT(*) AS call_count,
-                ROUND(SUM(billsec) / 60, 2) AS formatted_total_time_minutes
-            FROM
-                cdr
-            WHERE
-                DATE(calldate) = %s
-                AND lastapp = 'Dial'
-                AND disposition = 'ANSWERED'
-            GROUP BY
-                cnum
-            ORDER BY
-                SUM(billsec) DESC
+                SELECT
+    cdr.cnum,
+    IFNULL(cdr.cnam, '') AS cnam,
+    COUNT(DISTINCT cdr.dst) AS unique_calls,
+    COUNT(*) AS call_count,
+    ROUND(SUM(CASE
+        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
+        THEN cdr.billsec
+        ELSE 0
+    END) / 60, 2) AS formatted_total_time_minutes
+FROM
+    asteriskcdrdb.cdr
+WHERE
+    DATE(cdr.calldate) = %s
+    AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
+    AND cdr.lastapp IN ('Dial', 'Busy', 'Congestion')
+    AND cdr.disposition != 'FAILED'
+    AND cdr.dst NOT REGEXP '^[0-9]{4}$'
+GROUP BY
+    cdr.cnum, cdr.cnam
+ORDER BY
+    formatted_total_time_minutes DESC;
             """
             cursor.execute(query, (date_param,))
             results = cursor.fetchall()

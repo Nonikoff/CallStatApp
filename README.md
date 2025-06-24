@@ -2,20 +2,6 @@
 
 This API provides call statistics from an Asterisk CDR database.
 
-## Setup
-
-1. Install the required packages:
-
-`pip install -r requirements`
-
-2. Create a `.env` file with your database credentials and API token.
-
-3. Run the application:
-   
-
-`   gunicorn app:app`
-
-
 ## API Endpoints
 
 ### Get Call Statistics
