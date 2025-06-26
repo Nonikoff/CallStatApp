@@ -77,37 +77,96 @@ def query_database(db_config, date_param):
 
     try:
         with connection.cursor() as cursor:
-            query = """
+            # Determine which query to use based on date_param
+            if date_param.lower() == 'week':
+                query = """
                 SELECT
-    cdr.cnum,
-    IFNULL(cdr.cnam, '') AS cnam,
-    COUNT(DISTINCT cdr.dst) AS unique_calls,
-    COUNT(*) AS call_count,
-    ROUND(SUM(CASE
-        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
-        THEN cdr.billsec
-        ELSE 0
-    END) / 60, 2) AS formatted_total_time_minutes
-FROM
-    asteriskcdrdb.cdr
-WHERE
-    DATE(cdr.calldate) = %s
-    AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
-    AND cdr.lastapp IN ('Dial', 'Busy', 'Congestion')
-    AND cdr.disposition != 'FAILED'
-    AND cdr.dst NOT REGEXP '^[0-9]{4}$'
-GROUP BY
-    cdr.cnum, cdr.cnam
-ORDER BY
-    formatted_total_time_minutes DESC;
-            """
-            cursor.execute(query, (date_param,))
+                    cdr.cnum,
+                    IFNULL(cdr.cnam, '') AS cnam,
+                    COUNT(DISTINCT cdr.dst) AS unique_calls,
+                    COUNT(DISTINCT cdr.uniqueid) AS call_count,
+                    ROUND(SUM(CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
+                        THEN cdr.billsec
+                        ELSE 0
+                    END) / 60, 2) AS formatted_total_time_minutes
+                FROM
+                    asteriskcdrdb.cdr
+                WHERE
+                    calldate >= DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) + 7 DAY)
+                    AND calldate < DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) + 2 DAY)
+                    AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
+                    AND cdr.lastapp IN ('Dial', 'Busy', 'Congestion')
+                    AND cdr.disposition != 'FAILED'
+                    AND cdr.dst NOT REGEXP '^[0-9]{4}$'
+                GROUP BY
+                    cdr.cnum, cdr.cnam
+                ORDER BY
+                    formatted_total_time_minutes DESC
+                """
+                cursor.execute(query)
+            elif date_param.lower() == 'month':
+                query = """
+                SELECT
+                    cdr.cnum,
+                    IFNULL(cdr.cnam, '') AS cnam,
+                    COUNT(DISTINCT cdr.dst) AS unique_calls,
+                    COUNT(DISTINCT cdr.uniqueid) AS call_count,
+                    ROUND(SUM(CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
+                        THEN cdr.billsec
+                        ELSE 0
+                    END) / 60, 2) AS formatted_total_time_minutes
+                FROM
+                    asteriskcdrdb.cdr
+                WHERE
+                    calldate >= DATE_FORMAT(DATE_SUB(CURRENT_DATE, INTERVAL 1 MONTH), '%Y-%m-01')
+                    AND calldate < DATE_FORMAT(CURRENT_DATE, '%Y-%m-01')
+                    AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
+                    AND cdr.lastapp IN ('Dial', 'Busy', 'Congestion')
+                    AND cdr.disposition != 'FAILED'
+                    AND cdr.dst NOT REGEXP '^[0-9]{4}$'
+                GROUP BY
+                    cdr.cnum, cdr.cnam
+                ORDER BY
+                    formatted_total_time_minutes DESC
+                """
+                cursor.execute(query)
+            else:
+                # Original query for specific date
+                query = """
+                SELECT
+                    cdr.cnum,
+                    IFNULL(cdr.cnam, '') AS cnam,
+                    COUNT(DISTINCT cdr.dst) AS unique_calls,
+                    COUNT(DISTINCT cdr.uniqueid) AS call_count,
+                    ROUND(SUM(CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
+                        THEN cdr.billsec
+                        ELSE 0
+                    END) / 60, 2) AS formatted_total_time_minutes
+                FROM
+                    asteriskcdrdb.cdr
+
+                WHERE
+                    DATE(cdr.calldate) = %s
+                    AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
+                    AND cdr.lastapp IN ('Dial', 'Busy', 'Congestion')
+                    AND cdr.disposition != 'FAILED'
+                    AND cdr.dst NOT REGEXP '^[0-9]{4}$'
+                GROUP BY
+                    cdr.cnum, cdr.cnam
+                ORDER BY
+                    formatted_total_time_minutes DESC
+                """
+                cursor.execute(query, (date_param,))
+
             results = cursor.fetchall()
 
-            # Convert Decimal objects to float for JSON serialization
+            # Convert Decimal objects to float for JSON serialization and ensure 2 decimal places
             for row in results:
                 if 'formatted_total_time_minutes' in row:
-                    row['formatted_total_time_minutes'] = float(row['formatted_total_time_minutes'])
+                    row['formatted_total_time_minutes'] = round(float(row['formatted_total_time_minutes']), 2)
 
             return {
                 'status': 'success',
@@ -155,12 +214,17 @@ def combine_results(all_results):
 
     # Convert to list and sort by total time
     combined_list = list(combined.values())
+
+    # Ensure all formatted_total_time_minutes are rounded to exactly 2 decimal places
+    for item in combined_list:
+        item['formatted_total_time_minutes'] = round(item['formatted_total_time_minutes'], 2)
+
     combined_list.sort(key=lambda x: x['formatted_total_time_minutes'], reverse=True)
 
     return combined_list, errors
 @app.route('/api/v1/<token>/callstat', methods=['GET'])
 def get_call_stats(token):
-    """Get call statistics from multiple databases for a specific date"""
+    """Get call statistics from multiple databases for a specific date, week, or month"""
     # Validate token
     if token != API_TOKEN:
         return jsonify({'error': 'Invalid token'}), 401
@@ -168,15 +232,15 @@ def get_call_stats(token):
     # Get date parameter
     date_param = request.args.get('date')
 
-    # Validate date format
-    try:
-        if date_param:
+    # Validate date format or special keywords
+    if not date_param:
+        # Use current date if no date provided
+        date_param = datetime.now().strftime('%Y-%m-%d')
+    elif date_param.lower() not in ['week', 'month']:
+        try:
             datetime.strptime(date_param, '%Y-%m-%d')
-        else:
-            # Use current date if no date provided
-            date_param = datetime.now().strftime('%Y-%m-%d')
-    except ValueError:
-        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+        except ValueError:
+            return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD or "week" or "month"'}), 400
 
     # Query all databases
     all_results = {}
