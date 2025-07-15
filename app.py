@@ -4,11 +4,13 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 import logging
+from collections import OrderedDict  # Add this import
 
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
+app.json.sort_keys = False  # This ensures that jsonify doesn't sort the keys alphabetically
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -89,7 +91,17 @@ def query_database(db_config, date_param):
                         WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
                         THEN cdr.billsec
                         ELSE 0
-                    END) / 60, 2) AS formatted_total_time_minutes
+                    END) / 60, 2) AS total_call_time_minutes,
+                    COUNT(DISTINCT CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                        THEN cdr.uniqueid
+                        ELSE NULL
+                    END) AS long_calls_count,
+                    ROUND(SUM(CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                        THEN cdr.billsec
+                        ELSE 0
+                    END) / 60, 2) AS total_long_calls_minutes
                 FROM
                     asteriskcdrdb.cdr
                 WHERE
@@ -102,7 +114,7 @@ def query_database(db_config, date_param):
                 GROUP BY
                     cdr.cnum, cdr.cnam
                 ORDER BY
-                    formatted_total_time_minutes DESC
+                    total_call_time_minutes DESC
                 """
                 cursor.execute(query)
             elif date_param.lower() == 'month':
@@ -116,7 +128,17 @@ def query_database(db_config, date_param):
                         WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
                         THEN cdr.billsec
                         ELSE 0
-                    END) / 60, 2) AS formatted_total_time_minutes
+                    END) / 60, 2) AS total_call_time_minutes,
+                    COUNT(DISTINCT CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                        THEN cdr.uniqueid
+                        ELSE NULL
+                    END) AS long_calls_count,
+                    ROUND(SUM(CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                        THEN cdr.billsec
+                        ELSE 0
+                    END) / 60, 2) AS total_long_calls_minutes
                 FROM
                     asteriskcdrdb.cdr
                 WHERE
@@ -129,7 +151,7 @@ def query_database(db_config, date_param):
                 GROUP BY
                     cdr.cnum, cdr.cnam
                 ORDER BY
-                    formatted_total_time_minutes DESC
+                    total_call_time_minutes DESC
                 """
                 cursor.execute(query)
             else:
@@ -144,10 +166,19 @@ def query_database(db_config, date_param):
                         WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
                         THEN cdr.billsec
                         ELSE 0
-                    END) / 60, 2) AS formatted_total_time_minutes
+                    END) / 60, 2) AS total_call_time_minutes,
+                    COUNT(DISTINCT CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                        THEN cdr.uniqueid
+                        ELSE NULL
+                    END) AS long_calls_count,
+                    ROUND(SUM(CASE
+                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                        THEN cdr.billsec
+                        ELSE 0
+                    END) / 60, 2) AS total_long_calls_minutes
                 FROM
                     asteriskcdrdb.cdr
-
                 WHERE
                     DATE(cdr.calldate) = %s
                     AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
@@ -157,7 +188,7 @@ def query_database(db_config, date_param):
                 GROUP BY
                     cdr.cnum, cdr.cnam
                 ORDER BY
-                    formatted_total_time_minutes DESC
+                    total_call_time_minutes DESC
                 """
                 cursor.execute(query, (date_param,))
 
@@ -165,8 +196,10 @@ def query_database(db_config, date_param):
 
             # Convert Decimal objects to float for JSON serialization and ensure 2 decimal places
             for row in results:
-                if 'formatted_total_time_minutes' in row:
-                    row['formatted_total_time_minutes'] = round(float(row['formatted_total_time_minutes']), 2)
+                if 'total_call_time_minutes' in row:
+                    row['total_call_time_minutes'] = round(float(row['total_call_time_minutes']), 2)
+                if 'total_long_calls_minutes' in row:
+                    row['total_long_calls_minutes'] = round(float(row['total_long_calls_minutes']), 2)
 
             return {
                 'status': 'success',
@@ -199,14 +232,18 @@ def combine_results(all_results):
                 combined[cnum] = {
                     'cnum': cnum,
                     'cnam': row['cnam'],
-                    'unique_calls': 0,
                     'call_count': 0,
-                    'formatted_total_time_minutes': 0
+                    'total_call_time_minutes': 0,
+                    'long_calls_count': 0,
+                    'total_long_calls_minutes': 0,
+                    'unique_calls': 0
                 }
 
             combined[cnum]['unique_calls'] += row['unique_calls']
             combined[cnum]['call_count'] += row['call_count']
-            combined[cnum]['formatted_total_time_minutes'] += row['formatted_total_time_minutes']
+            combined[cnum]['total_call_time_minutes'] += row['total_call_time_minutes']
+            combined[cnum]['long_calls_count'] += row['long_calls_count']
+            combined[cnum]['total_long_calls_minutes'] += row['total_long_calls_minutes']
 
             # Use the non-empty cnam if available
             if not combined[cnum]['cnam'] and row['cnam']:
@@ -215,13 +252,16 @@ def combine_results(all_results):
     # Convert to list and sort by total time
     combined_list = list(combined.values())
 
-    # Ensure all formatted_total_time_minutes are rounded to exactly 2 decimal places
+    # Ensure all total_call_time_minutes are rounded to exactly 2 decimal places
     for item in combined_list:
-        item['formatted_total_time_minutes'] = round(item['formatted_total_time_minutes'], 2)
+        item['total_call_time_minutes'] = round(item['total_call_time_minutes'], 2)
+        item['total_long_calls_minutes'] = round(item['total_long_calls_minutes'], 2)
 
-    combined_list.sort(key=lambda x: x['formatted_total_time_minutes'], reverse=True)
+    combined_list.sort(key=lambda x: x['total_call_time_minutes'], reverse=True)
 
     return combined_list, errors
+
+
 @app.route('/api/v1/<token>/callstat', methods=['GET'])
 def get_call_stats(token):
     """Get call statistics from multiple databases for a specific date, week, or month"""
@@ -249,17 +289,32 @@ def get_call_stats(token):
 
     # Combine results
     combined_data, errors = combine_results(all_results)
-
-    # Prepare response
-    response = {
-        'data': combined_data,
-        'date': date_param
-    }
+    
+    # Reorder fields in each record using OrderedDict
+    reordered_data = []
+    for item in combined_data:
+        reordered_item = OrderedDict([
+            ('cnum', item['cnum']),
+            ('cnam', item['cnam']),
+            ('call_count', item['call_count']),
+            ('total_call_time_minutes', item['total_call_time_minutes']),
+            ('long_calls_count', item['long_calls_count']),
+            ('total_long_calls_minutes', item['total_long_calls_minutes']),
+            ('unique_calls', item['unique_calls'])
+        ])
+        reordered_data.append(reordered_item)
+    
+    # Prepare response with OrderedDict
+    response = OrderedDict([
+        ('data', reordered_data),
+        ('date', date_param)
+    ])
 
     if errors:
         response['errors'] = errors
 
     return jsonify(response)
+
 
 if __name__ == '__main__':
     # For development only
