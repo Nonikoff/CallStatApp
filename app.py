@@ -24,7 +24,6 @@ db_configs = [
         'port': int(os.getenv('DB1_PORT', 3306)),
         'user': os.getenv('DB1_USER'),
         'password': os.getenv('DB1_PASSWORD'),
-        'db': os.getenv('DB1_NAME'),
         'charset': 'utf8mb4',
         'cursorclass': pymysql.cursors.DictCursor
     },
@@ -34,7 +33,6 @@ db_configs = [
         'port': int(os.getenv('DB2_PORT', 3306)),
         'user': os.getenv('DB2_USER'),
         'password': os.getenv('DB2_PASSWORD'),
-        'db': os.getenv('DB2_NAME'),
         'charset': 'utf8mb4',
         'cursorclass': pymysql.cursors.DictCursor
     },
@@ -44,7 +42,6 @@ db_configs = [
         'port': int(os.getenv('DB3_PORT', 3306)),
         'user': os.getenv('DB3_USER'),
         'password': os.getenv('DB3_PASSWORD'),
-        'db': os.getenv('DB3_NAME'),
         'charset': 'utf8mb4',
         'cursorclass': pymysql.cursors.DictCursor
     }
@@ -62,7 +59,6 @@ def get_connection(db_config):
             port=db_config['port'],
             user=db_config['user'],
             password=db_config['password'],
-            db=db_config['db'],
             charset=db_config['charset'],
             cursorclass=db_config['cursorclass']
         )
@@ -195,15 +191,56 @@ def query_database(db_config, date_param):
             results = cursor.fetchall()
 
             # Convert Decimal objects to float for JSON serialization and ensure 2 decimal places
+            stats_by_cnum = {}
             for row in results:
                 if 'total_call_time_minutes' in row:
                     row['total_call_time_minutes'] = round(float(row['total_call_time_minutes']), 2)
                 if 'total_long_calls_minutes' in row:
                     row['total_long_calls_minutes'] = round(float(row['total_long_calls_minutes']), 2)
 
+                # Index stats by extension for later merge with extension list
+                stats_by_cnum[row['cnum']] = row
+
+            # --- Get full extension list from asterisk.sip and add zero-stat rows where needed ---
+            ext_query = """
+                SELECT
+                    id AS cnum,
+                    SUBSTRING_INDEX(SUBSTRING_INDEX(data, ',', -1), '<', 1) AS cnam
+                FROM asterisk.sip
+                WHERE keyword = 'callerid'
+                  AND id >= 2000
+                  AND id <= 3999
+            """
+            cursor.execute(ext_query)
+            extensions = cursor.fetchall()
+
+            final_rows = []
+            for ext in extensions:
+                cnum = ext['cnum']
+                ext_name = ext.get('cnam') or ''
+
+                if cnum in stats_by_cnum:
+                    row = stats_by_cnum[cnum]
+                    # Prefer non-empty name from sip if cnam is empty in stats
+                    if not row.get('cnam') and ext_name:
+                        row['cnam'] = ext_name
+                else:
+                    # No stats for this extension on the requested date/period – add zero stats
+                    row = {
+                        'cnum': cnum,
+                        'cnam': ext_name,
+                        'unique_calls': 0,
+                        'call_count': 0,
+                        'total_call_time_minutes': 0.00,
+                        'long_calls_count': 0,
+                        'total_long_calls_minutes': 0.00,
+                    }
+
+                final_rows.append(row)
+
             return {
                 'status': 'success',
-                'data': results
+                'data': final_rows
             }
 
     except Exception as e:
