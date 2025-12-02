@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Database configurations
 db_configs = [
     {
-        'name': 'DB1',
+        'name': os.getenv('DB1_HOST'),
         'host': os.getenv('DB1_HOST'),
         'port': int(os.getenv('DB1_PORT', 3306)),
         'user': os.getenv('DB1_USER'),
@@ -29,7 +29,7 @@ db_configs = [
         'cursorclass': pymysql.cursors.DictCursor
     },
     {
-        'name': 'DB2',
+        'name': os.getenv('DB2_HOST'),
         'host': os.getenv('DB2_HOST'),
         'port': int(os.getenv('DB2_PORT', 3306)),
         'user': os.getenv('DB2_USER'),
@@ -38,7 +38,7 @@ db_configs = [
         'cursorclass': pymysql.cursors.DictCursor
     },
     {
-        'name': 'DB3',
+        'name': os.getenv('DB3_HOST'),
         'host': os.getenv('DB3_HOST'),
         'port': int(os.getenv('DB3_PORT', 3306)),
         'user': os.getenv('DB3_USER'),

@@ -1,115 +1,223 @@
-# Asterisk Call Statistics API
+# Asterisk Call Statistics API (CallStatApp)
 
-This API provides call statistics from an Asterisk CDR database.
+A small Flask API that aggregates call statistics from one or more Asterisk CDR MySQL databases. It exposes endpoints to get per-extension call time summaries and Answer-Seizure Ratio (ASR) by destination country code.
 
-## API Endpoints
+Updated: 2025-12-02
 
-### Get Call Statistics
+## Overview
 
+- Language: Python 3
+- Framework: Flask (WSGI with Gunicorn in production)
+- DB Client: PyMySQL
+- Config: `.env` via `python-dotenv`
+- Container: Dockerfile provided (python:3.10-slim)
 
-GET /api/v1/{token}/callstat?date=YYYY-MM-DD
+The service queries three MySQL hosts (configurable) that contain an `asteriskcdrdb` schema with a `cdr` table. For ASR stats it expects a `country_codes` table and a MySQL function `get_country_code(dst)` to map destination numbers to country codes. Results from all configured databases are combined for the call statistics endpoint and returned per extension.
 
+## Requirements
 
-Parameters:
-- `token`: Your API authentication token
-- `date`: (Optional) The date for which to retrieve statistics (default: current date)
+- Python 3.10+ (3.10 recommended; matches Dockerfile)
+- Access to one or more MySQL/MariaDB servers hosting `asteriskcdrdb.cdr`
+- Network connectivity from the API host to the DB hosts (TCP 3306 by default)
 
-Response:
-`json
-[
-  {
-    "src": "1234",
-    "cnam": "John Doe",
-    "unique_calls": 5,
-    "call_count": 10,
-    "formatted_total_time_minutes": 45.5
-  },
-  ...
-]`
+System packages (Linux) that may be required for building MySQL client headers when installing dependencies:
+- `default-libmysqlclient-dev` (Debian/Ubuntu) — already installed in the Docker image
 
-## 1. Prepare Your Server
+## Project Structure
 
-### Install Required System Packages
-
-```bash
-# Update package lists
-sudo apt update
-
-# Install Python and related tools
-sudo apt install python3 python3-pip python3-venv
-
-# Install MySQL client (for database connections)
-sudo apt install default-libmysqlclient-dev
-
-# Install Nginx (for reverse proxy)
-sudo apt install nginx
-
-# Install Supervisor (for process management)
-sudo apt install supervisor
+```
+.
+├─ app.py            # Flask app with routes and SQL queries
+├─ requirements.txt  # Python dependencies
+├─ Dockerfile        # Production container image (Gunicorn)
+└─ README.md         # This file
 ```
 
-## 2. Set Up Application Directory
+## Environment Variables
 
-```bash
-# Create application directory
-sudo mkdir -p /opt/asterisk-api
+The app reads configuration from a `.env` file in the project root (loaded automatically by `python-dotenv`). Define credentials for up to three databases and the API token:
 
-# Set ownership (replace 'yourusername' with your actual username)
-sudo chown yourusername:yourusername /opt/asterisk-api
+```
+# Database 1
+DB1_HOST=host1.example.com
+DB1_PORT=3306
+DB1_USER=username
+DB1_PASSWORD=secret
 
-# Navigate to the directory
-cd /opt/asterisk-api
+# Database 2 (optional)
+DB2_HOST=host2.example.com
+DB2_PORT=3306
+DB2_USER=username
+DB2_PASSWORD=secret
+
+# Database 3 (optional)
+DB3_HOST=host3.example.com
+DB3_PORT=3306
+DB3_USER=username
+DB3_PASSWORD=secret
+
+# API auth
+API_TOKEN=your-secure-token
 ```
 
-## 3. Create a Python Virtual Environment
+Notes
+- Do not commit real secrets. Ensure `.env` is excluded in your VCS if this is intended to be private. If `.env` is already tracked, rotate credentials immediately and remove secrets from history.
+- The database name used in queries is `asteriskcdrdb`. Ensure this schema exists on each host.
+- For ASR endpoint, the DB should provide a `country_codes` table and a scalar function `get_country_code(number)`. TODO: Document schema and function definition for `country_codes` and `get_country_code`.
+
+## Installation (local)
 
 ```bash
-# Create virtual environment
-python3 -m venv venv
+python -m venv .venv
+.
+# Linux/macOS
+source .venv/bin/activate
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
 
-# Activate the virtual environment
-source venv/bin/activate
-```
-
-## 4. Deploy Application Files
-
-Copy application files to the server:
-
-Copy or clone App git to dir
-
-## 5. Install Python Dependencies
-
-```bash
-# Make sure you're in the application directory with activated virtual environment
 pip install -r requirements.txt
 
-# Install Gunicorn (WSGI server)
+# create and fill .env as shown above
+
+# Run dev server (Flask built-in; not for production)
+python app.py
+```
+
+By default the development server listens on `http://127.0.0.1:5000`.
+
+## Running with Gunicorn (recommended)
+
+```bash
+gunicorn --bind 0.0.0.0:8000 app:app
+```
+
+## Docker
+
+Build and run the container:
+
+```bash
+# Build
+docker build -t callstat-app:latest .
+
+# Run (point to a local .env file)
+docker run --name callstat \
+  --env-file .env \
+  -p 8000:8000 \
+  callstat-app:latest
+```
+
+The container runs `gunicorn --bind 0.0.0.0:8000 app:app` and exposes port 8000.
+
+## API
+
+All endpoints require a path token: `/api/v1/<token>/...`. The token must exactly match `API_TOKEN` from the environment; otherwise the API returns HTTP 401.
+
+Common query parameter for both endpoints:
+- `date`: One of `YYYY-MM-DD` (specific date), `week` (previous full work week per query in code), or `month` (previous calendar month). If omitted, defaults to the current date.
+
+### 1) Call statistics per extension
+
+```
+GET /api/v1/{token}/callstat?date=YYYY-MM-DD|week|month
+```
+
+Response example:
+
+```json
+{
+  "data": [
+    {
+      "cnum": "2001",
+      "cnam": "John Doe",
+      "call_count": 10,
+      "total_call_time_minutes": 45.5,
+      "long_calls_count": 3,
+      "total_long_calls_minutes": 12.5,
+      "unique_calls": 5
+    }
+  ],
+  "date": "2025-12-02",
+  "errors": { "db-host": "error message" }
+}
+```
+
+Notes
+- Results combine data across the configured databases. If any DB fails, an `errors` object is included while still returning available data from others.
+- The SQL excludes 4-digit internal calls and focuses on `lastapp IN ('Dial','Busy','Congestion')` with non-failed dispositions.
+
+### 2) ASR by destination country code
+
+```
+GET /api/v1/{token}/asrstat?date=YYYY-MM-DD|week|month
+```
+
+Response example (per database):
+
+```json
+{
+  "date": "2025-12-02",
+  "databases": {
+    "db1.example.com": {
+      "status": "success",
+      "data": [
+        {
+          "country_code": "+1",
+          "country": "United States",
+          "answered_calls": 120,
+          "total_calls": 200,
+          "asr_percentage": 60.0,
+          "unique_destinations": 85,
+          "total_talk_minutes": 430.5
+        }
+      ]
+    }
+  }
+}
+```
+
+Notes
+- Requires DB-side function `get_country_code(cdr.dst)` and table `asteriskcdrdb.country_codes` with mapping. TODO: Provide DDL and function body.
+
+## Scripts and commands
+
+- Development server: `python app.py`
+- Gunicorn (local): `gunicorn --bind 0.0.0.0:8000 app:app`
+- Docker build: `docker build -t callstat-app:latest .`
+- Docker run: `docker run --env-file .env -p 8000:8000 callstat-app:latest`
+
+## Testing
+
+There are currently no automated tests in this repository. TODOs:
+- Add unit tests for SQL assembly and result combining.
+- Add endpoint integration tests using Flask test client.
+- Provide a sample SQL fixture or a Docker Compose for a local MySQL with mock `asteriskcdrdb`.
+
+## Production deployment (optional)
+
+The following high-level steps can be used to deploy on a Linux server behind Nginx using Supervisor. Adjust paths and usernames as needed.
+
+1) Install system packages
+
+```bash
+sudo apt update
+sudo apt install python3 python3-pip python3-venv default-libmysqlclient-dev nginx supervisor
+```
+
+2) Create app directory and venv
+
+```bash
+sudo mkdir -p /opt/asterisk-api
+sudo chown $USER:$USER /opt/asterisk-api
+cd /opt/asterisk-api
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 pip install gunicorn
 ```
 
-## 6. Test Application
+3) Run with Supervisor
 
-```bash
-# Test the application with Gunicorn
-gunicorn --bind 127.0.0.1:8000 app:app
-```
-
-Try accessing API in another terminal:
-```bash
-curl "http://127.0.0.1:8000/api/v1/your_token/callstat?date=2025-06-05"
-```
-
-Press Ctrl+C to stop Gunicorn after testing.
-
-## 7. Configure Supervisor
-
-Create a supervisor configuration file:
-
-```bash
-sudo nano /etc/supervisor/conf.d/asterisk-api.conf
-```
-
-Add the following content:
+Create `/etc/supervisor/conf.d/asterisk-api.conf`:
 
 ```ini
 [program:asterisk-api]
@@ -119,187 +227,54 @@ autostart=true
 autorestart=true
 stderr_logfile=/var/log/asterisk-api/error.log
 stdout_logfile=/var/log/asterisk-api/access.log
-user=yourusername
+user=www-data
 ```
 
-Create log directories:
+Then:
 
 ```bash
 sudo mkdir -p /var/log/asterisk-api
-sudo chown yourusername:yourusername /var/log/asterisk-api
+sudo supervisorctl reread && sudo supervisorctl update && sudo supervisorctl start asterisk-api
 ```
 
-Update and start supervisor:
-
-```bash
-sudo supervisorctl reread
-sudo supervisorctl update
-sudo supervisorctl start asterisk-api
-```
-
-## 8. Configure Nginx as a Reverse Proxy
-
-Create an Nginx configuration file:
-
-```bash
-sudo nano /etc/nginx/sites-available/asterisk-api
-```
-
-Add the following content:
+4) Nginx reverse proxy
 
 ```nginx
 server {
-    listen 80;
-    server_name your-server-domain.com;  # Replace with your domain or IP
+  listen 80;
+  server_name your-server-domain.com;
 
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+  location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
 }
 ```
 
-Enable the site and restart Nginx:
+Optionally secure with Let's Encrypt using certbot. See original guide below for more tips (firewall, monitoring, backups).
 
-```bash
-sudo ln -s /etc/nginx/sites-available/asterisk-api /etc/nginx/sites-enabled/
-sudo nginx -t  # Test the configuration
-sudo systemctl restart nginx
-```
+## Troubleshooting
 
-## 9. Set Up SSL with Let's Encrypt (Optional but Recommended)
+- 401 Unauthorized: Ensure path token equals `API_TOKEN`.
+- DB errors/timeouts: Check connectivity to each `DBx_HOST` and credentials. The response may include an `errors` section per database.
+- Empty results: Confirm that `asteriskcdrdb.cdr` contains data for the requested date range and that internal call filters match your dialing plan.
+- ASR endpoint fails: Ensure the `country_codes` table and `get_country_code` function exist. Check DB permissions to execute functions.
 
-```bash
-# Install Certbot
-sudo apt install certbot python3-certbot-nginx
-```
+## License
 
-Obtain and install SSL certificate
-```bash
-sudo certbot --nginx -d your-server-domain.com
-```
+Proprietary – All Rights Reserved
 
-## 10. Secure Application
+This software is not open-source. No one is allowed to use, copy, modify, merge, publish, distribute, sublicense, or sell copies of this software, in whole or in part, without the prior written permission of the owner.
 
-### Firewall Configuration
+By default, no license or usage rights are granted. To request permission, please contact the repository owner.
 
-```bash
-Allow SSH, HTTP, and HTTPS
-sudo ufw allow ssh
-sudo ufw allow http
-sudo ufw allow https
-sudo ufw enable
-```
+See the LICENSE file in this repository for the full terms.
 
-### Secure the .env File
+---
 
-```bash
-#Ensure proper permissions for .env
+### Appendix: Original Ubuntu deployment guide
 
-chmod 600 /opt/asterisk-api/.env
-```
-
-## 11. Set Up Monitoring (Optional)
-
-Consider setting up monitoring for your application:
-
-```bash
-#Install monitoring tools (example: netdata)
-
-sudo apt install netdata
-
-#Enable and start the service
-
-sudo systemctl enable netdata
-sudo systemctl start netdata
-```
-## 12. Test Production Deployment
-
-Test your API with curl or a web browser:
-
-```bash
-curl "https://your-server-domain.com/api/v1/your_token/callstat?date=2025-06-05"
-```
-
-## 13. Set Up Regular Backups (Optional)
-
-Create a backup script:
-
-```bash
-sudo nano /opt/backup-asterisk-api.sh
-```
-
-Add the following content:
-
-```bash
-#!/bin/bash
-BACKUP_DIR="/opt/backups/asterisk-api"
-mkdir -p $BACKUP_DIR
-cp -r /opt/asterisk-api $BACKUP_DIR/asterisk-api-$(date +%Y%m%d)
-find $BACKUP_DIR -type d -mtime +7 -exec rm -rf {} \;
-```
-Make it executable and add to crontab:
-
-```bash
-sudo chmod +x /opt/backup-asterisk-api.sh
-sudo crontab -e
-```
-
-Add this line to run backups daily:
-
-0 2 * * * /opt/backup-asterisk-api.sh
-
-## 14. Maintenance Tasks
-
-### Updating Application
-
-```bash
-#Navigate to your application directory
-
-cd /opt/asterisk-api
-
-#Activate virtual environment
-
-source venv/bin/activate
-
-#Pull latest code (if using git)
-
-git pull
-
-#Install any new dependencies
-
-pip install -r requirements.txt
-
-#Restart the application
-
-sudo supervisorctl restart asterisk-api
-```
-### Checking Logs
-
-```bash
-#Application logs
-
-sudo tail -f /var/log/asterisk-api/access.log
-sudo tail -f /var/log/asterisk-api/error.log
-
-#Nginx logs
-
-sudo tail -f /var/log/nginx/access.log
-sudo tail -f /var/log/nginx/error.log
-```
-## 15. Troubleshooting
-
-If you encounter issues:
-
-1. Check application logs: `/var/log/asterisk-api/error.log`
-
-2. Check Nginx logs: `/var/log/nginx/error.log`
-
-3. Check supervisor status: `sudo supervisorctl status asterisk-api`
-
-4. Test the application directly: `curl http://127.0.0.1:8000/api/v1/your_token/callstat?date=2025-06-05`
-
-This comprehensive guide should help you deploy your Flask API to production with proper security, monitoring, and maintenance procedures. Let me know if you need any clarification on any of these steps!
+The repository previously included a detailed step-by-step Ubuntu deployment guide with Supervisor, Nginx, SSL, monitoring, backups, and maintenance commands. Those steps remain generally applicable; review and adapt them to your environment. Ensure that commands reference `app:app` and port `8000` as shown above and that secrets are managed securely (do not keep real credentials in `.env` under version control).
