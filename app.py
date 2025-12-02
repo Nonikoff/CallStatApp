@@ -4,7 +4,8 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 import logging
-from collections import OrderedDict  # Add this import
+from collections import OrderedDict
+
 
 # Load environment variables
 load_dotenv()
@@ -352,6 +353,153 @@ def get_call_stats(token):
 
     return jsonify(response)
 
+@app.route('/api/v1/<token>/asrstat', methods=['GET'])
+def get_asr_stats(token):
+        """Get ASR statistics by country code prefix from multiple databases"""
+        # Validate token
+        if token != API_TOKEN:
+            return jsonify({'error': 'Invalid token'}), 401
+
+        # Get date parameter
+        date_param = request.args.get('date')
+
+        # Validate date format
+        if not date_param:
+            # Use current date if no date provided
+            date_param = datetime.now().strftime('%Y-%m-%d')
+        elif date_param.lower() not in ['week', 'month']:
+            try:
+                datetime.strptime(date_param, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD, "week", or "month"'}), 400
+
+        # Query all databases
+        all_results = {}
+        for db_config in db_configs:
+            all_results[db_config['name']] = query_asr_database(db_config, date_param)
+
+        # Prepare response with results from each database separately
+        response = OrderedDict([
+            ('date', date_param),
+            ('databases', all_results)
+        ])
+
+        return jsonify(response)
+
+def query_asr_database(db_config, date_param):
+        """Query a single database for ASR statistics by country code prefix"""
+        connection = get_connection(db_config)
+        if not connection:
+            return {
+                'error': f"Failed to connect to {db_config['name']} at {db_config['host']}:{db_config['port']}"
+            }
+
+        try:
+            with connection.cursor() as cursor:
+                # Determine which query to use based on date_param
+                if date_param.lower() == 'week':
+                    cursor.execute("USE asteriskcdrdb")
+                    query = """
+                        SELECT 
+                            get_country_code(cdr.dst) AS country_code,
+                            cc.country,
+                            COUNT(DISTINCT CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.uniqueid ELSE NULL END) AS answered_calls,
+                            COUNT(DISTINCT cdr.uniqueid) AS total_calls,
+                            ROUND((COUNT(DISTINCT CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.uniqueid ELSE NULL END) / 
+                                   COUNT(DISTINCT cdr.uniqueid)) * 100, 2) AS asr_percentage,
+                            COUNT(DISTINCT cdr.dst) AS unique_destinations,
+                            ROUND(SUM(CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.billsec ELSE 0 END) / 60, 2) AS total_talk_minutes
+                        FROM asteriskcdrdb.cdr
+                        LEFT JOIN asteriskcdrdb.country_codes cc ON cc.code = get_country_code(cdr.dst)
+                        WHERE calldate >= DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) + 7 DAY)
+                          AND calldate < DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) + 2 DAY)
+                          AND cdr.lastapp = 'Dial'
+                          AND cdr.disposition IN ('ANSWERED', 'NO ANSWER', 'BUSY', 'FAILED')
+                          AND cdr.dst NOT REGEXP '^[0-9]{4}$' -- Excluding 4-digit internal calls
+                        GROUP BY get_country_code(cdr.dst), cc.country
+                        ORDER BY total_calls DESC
+                    """
+                    cursor.execute(query)
+                elif date_param.lower() == 'month':
+                    cursor.execute("USE asteriskcdrdb")
+                    query = """
+                       SELECT 
+                            get_country_code(cdr.dst) AS country_code,
+                            cc.country,
+                            COUNT(DISTINCT CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.uniqueid ELSE NULL END) AS answered_calls,
+                            COUNT(DISTINCT cdr.uniqueid) AS total_calls,
+                            ROUND((COUNT(DISTINCT CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.uniqueid ELSE NULL END) / 
+                                   COUNT(DISTINCT cdr.uniqueid)) * 100, 2) AS asr_percentage,
+                            COUNT(DISTINCT cdr.dst) AS unique_destinations,
+                            ROUND(SUM(CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.billsec ELSE 0 END) / 60, 2) AS total_talk_minutes
+                        FROM asteriskcdrdb.cdr
+                        LEFT JOIN asteriskcdrdb.country_codes cc ON cc.code = get_country_code(cdr.dst)
+                        WHERE calldate >= DATE_FORMAT(DATE_SUB(CURRENT_DATE, INTERVAL 1 MONTH), '%Y-%m-01')
+                          AND calldate < DATE_FORMAT(CURRENT_DATE, '%Y-%m-01')
+                          AND cdr.lastapp = 'Dial'
+                          AND cdr.disposition IN ('ANSWERED', 'NO ANSWER', 'BUSY', 'FAILED')
+                          AND cdr.dst NOT REGEXP '^[0-9]{4}$' -- Excluding 4-digit internal calls
+                        GROUP BY get_country_code(cdr.dst), cc.country
+                        ORDER BY total_calls DESC
+                    """
+                    cursor.execute(query)
+                else:
+                    cursor.execute("USE asteriskcdrdb")
+                    # Query for specific date
+                    query = """
+                        SELECT 
+                            get_country_code(cdr.dst) AS country_code,
+                            cc.country,
+                            COUNT(DISTINCT CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.uniqueid ELSE NULL END) AS answered_calls,
+                            COUNT(DISTINCT cdr.uniqueid) AS total_calls,
+                            ROUND((COUNT(DISTINCT CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.uniqueid ELSE NULL END) / 
+                                   COUNT(DISTINCT cdr.uniqueid)) * 100, 2) AS asr_percentage,
+                            COUNT(DISTINCT cdr.dst) AS unique_destinations,
+                            ROUND(SUM(CASE WHEN cdr.disposition = 'ANSWERED' THEN cdr.billsec ELSE 0 END) / 60, 2) AS total_talk_minutes
+                        FROM asteriskcdrdb.cdr
+                        LEFT JOIN asteriskcdrdb.country_codes cc ON cc.code = get_country_code(cdr.dst)
+                        WHERE DATE(cdr.calldate) = %s -- You can adjust this date range as needed
+                          AND cdr.lastapp = 'Dial'
+                          AND cdr.disposition IN ('ANSWERED', 'NO ANSWER', 'BUSY', 'FAILED')
+                          AND cdr.dst NOT REGEXP '^[0-9]{4}$' -- Excluding 4-digit internal calls
+                        GROUP BY get_country_code(cdr.dst), cc.country
+                        ORDER BY total_calls DESC
+                    """
+                    cursor.execute(query, (date_param,))
+
+                results = cursor.fetchall()
+
+                # Convert Decimal objects to float for JSON serialization and add country name
+                for row in results:
+                    if 'answered_calls' in row:
+                        row['answered_calls'] = int(row['answered_calls'])
+                    if 'total_calls' in row:
+                        row['total_calls'] = int(row['total_calls'])
+                    if 'asr_percentage' in row:
+                        row['asr_percentage'] = round(float(row['asr_percentage']), 2)
+                    if 'unique_destinations' in row:
+                        row['unique_destinations'] = int(row['unique_destinations'])
+                    if 'total_talk_minutes' in row:
+                        row['total_talk_minutes'] = round(float(row['total_talk_minutes']), 2)
+                    if 'country_code' in row:
+                        row['country_code'] = str(row['country_code'])
+
+                return {
+                    'status': 'success',
+                    'data': results
+                }
+
+        except Exception as e:
+            logger.error(f"Error querying {db_config['name']} for ASR stats: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {
+                'error': f"Error querying {db_config['name']}: {str(e)}"
+            }
+
+        finally:
+            if connection and connection.open:
+                connection.close()
 
 if __name__ == '__main__':
     # For development only
