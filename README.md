@@ -582,8 +582,9 @@ See the LICENSE file for the complete license terms.
 
 If this project helps you, consider supporting its development:
 
-- Now Payments:<a href="https://nowpayments.io/donation?api_key=a1bb5801-1614-440d-a0eb-bc8e4f56faf4" target="_blank" rel="noreferrer noopener">
+- Now Payments:
 
+<a href="https://nowpayments.io/donation?api_key=a1bb5801-1614-440d-a0eb-bc8e4f56faf4" target="_blank" rel="noreferrer noopener">
 <img src="https://nowpayments.io/images/embeds/donation-button-white.svg" alt="Cryptocurrency & Bitcoin donation button by NOWPayments">
 </a>
 
