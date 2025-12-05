@@ -591,7 +591,7 @@ If this project helps you, consider supporting its development:
 - Crypto:
   - USDT TRC20: TNchkEFB1r7xU7Cyo3wYx8qDSiKjSFvSJc
 
-Thank you for your support! (Replace the placeholders above with your actual links/addresses.)
+Thank you for your support!
 
 ---
 
