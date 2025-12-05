@@ -2,7 +2,7 @@
 
 A small Flask API that aggregates call statistics from one or more Asterisk CDR MySQL databases. It exposes endpoints to get per-extension call time summaries and Answer-Seizure Ratio (ASR) by destination country code.
 
-Updated: 2025-12-02
+Updated: 2025-12-05
 
 ## Overview
 
@@ -93,6 +93,13 @@ gunicorn --bind 0.0.0.0:8000 app:app
 
 ## Docker
 
+There are two ways to run with Docker:
+
+1) Quick single-container run (no reverse proxy)
+2) Full setup with Nginx (HTTP or HTTPS with automatic Let's Encrypt) using the provided `install-docker.sh` script
+
+### Option A — Quick single-container run
+
 Build and run the container:
 
 ```bash
@@ -107,6 +114,67 @@ docker run --name callstat \
 ```
 
 The container runs `gunicorn --bind 0.0.0.0:8000 app:app` and exposes port 8000.
+
+### Option B — Automated setup with Nginx (HTTP or HTTPS)
+
+Use the provided Bash script `install-docker.sh` to generate a production-ready Docker Compose configuration with Nginx in front of the app. The script supports:
+- HTTP only (port 80)
+- HTTPS with automatic SSL via Let's Encrypt (ports 80/443) and background renewal using a Certbot container
+
+Prerequisites
+- Linux host with Bash (the script is a Bash script)
+- Docker and Docker Compose installed
+  - Docker: https://docs.docker.com/get-docker/
+  - Docker Compose (classic): https://docs.docker.com/compose/install/
+- Open firewall for ports 80 (HTTP) and 443 (HTTPS) as needed
+
+Steps
+```bash
+# 1) Make sure your .env exists (see Environment Variables section)
+#    If you don't have it yet, the script can scaffold a template for you.
+
+# 2) Run the installer from the project root
+chmod +x install-docker.sh
+
+# HTTP only (default)
+./install-docker.sh http
+
+# or HTTPS (you will be prompted for domain and email)
+./install-docker.sh https
+
+# 3) Start services (script creates helper scripts)
+./start.sh
+
+# 4) See status/logs
+./logs.sh
+
+# 5) Stop services
+./stop.sh
+
+# (HTTPS only) Manually trigger renewal check if needed
+./renew-cert.sh
+```
+
+What the installer does
+- Creates `.env` if missing (with placeholder values — update them!)
+- Creates an isolated Docker network
+- Writes Nginx configs under `./nginx/`
+- Generates `docker-compose.yml` with two (HTTP) or three (HTTPS) services:
+  - `callstat` (this app, bound to 127.0.0.1:8000 inside Compose)
+  - `nginx` (fronts the app; publishes 80 and optionally 443)
+  - `certbot` (HTTPS only; renews certificates automatically)
+- Creates helper scripts: `start.sh`, `stop.sh`, `logs.sh`, and `renew-cert.sh` (HTTPS)
+
+Access URLs
+- HTTP mode: `http://localhost/` (port 80 exposed)
+- HTTPS mode: `https://your-domain/` with HTTP redirected to HTTPS
+- Health checks: `/health`
+
+Notes
+- DNS: For HTTPS, point your domain (and `www`) to this server and allow inbound 80/443 before running `./start.sh` so Certbot can validate.
+- Renewal: The `certbot` container runs a renewal loop. Keep it running (i.e., don’t stop Compose) for auto-renewal.
+- docker-compose vs docker compose: The scripts use `docker-compose` (classic). If your system only has the plugin `docker compose`, create an alias or install the classic binary.
+- The generated Compose maps the application container port `8000` to `127.0.0.1:${APP_PORT}` and publishes ports via Nginx (`80` and optionally `443`).
 
 ## API
 
@@ -178,7 +246,7 @@ Response example (per database):
 Notes
 - Requires DB-side function `get_country_code(cdr.dst)` and table `asteriskcdrdb.country_codes` with mapping.
 ```sql
-- -- ASR % by country START
+-- ASR % by country START
 CREATE TABLE country_codes (
     code VARCHAR(10) PRIMARY KEY,
     country VARCHAR(100) NOT NULL
@@ -411,6 +479,11 @@ DELIMITER ;
 - Gunicorn (local): `gunicorn --bind 0.0.0.0:8000 app:app`
 - Docker build: `docker build -t callstat-app:latest .`
 - Docker run: `docker run --env-file .env -p 8000:8000 callstat-app:latest`
+- Installer (HTTP): `./install-docker.sh http && ./start.sh`
+- Installer (HTTPS): `./install-docker.sh https && ./start.sh`
+- Show logs (Compose): `./logs.sh`
+- Stop services (Compose): `./stop.sh`
+- Renew SSL (HTTPS): `./renew-cert.sh`
 
 ## Testing
 
@@ -489,16 +562,35 @@ Optionally secure with Let's Encrypt using certbot. See original guide below for
 - DB errors/timeouts: Check connectivity to each `DBx_HOST` and credentials. The response may include an `errors` section per database.
 - Empty results: Confirm that `asteriskcdrdb.cdr` contains data for the requested date range and that internal call filters match your dialing plan.
 - ASR endpoint fails: Ensure the `country_codes` table and `get_country_code` function exist. Check DB permissions to execute functions.
+- Docker install script not found: Ensure you’re in the project root and the file is executable (`chmod +x install-docker.sh`).
+- HTTPS certificate issuance fails: Verify that your domain resolves to the server’s public IP and that ports 80/443 are open. Re-run `./start.sh` after DNS propagates.
+- Only have `docker compose` but script expects `docker-compose`: Install classic Docker Compose or create an alias (`alias docker-compose='docker compose'`).
+- Port conflicts: Make sure nothing else is listening on ports 80/443 when starting Nginx.
 
 ## License
 
-Proprietary – All Rights Reserved
+Personal, Non‑Commercial use only — CC BY‑NC 4.0
 
-This software is not open-source. No one is allowed to use, copy, modify, merge, publish, distribute, sublicense, or sell copies of this software, in whole or in part, without the prior written permission of the owner.
+This project is licensed under the Creative Commons Attribution‑NonCommercial 4.0 International license (CC BY‑NC 4.0). You may use, copy, and adapt the work for personal, non‑commercial purposes with attribution. Commercial use is not permitted under this license.
 
-By default, no license or usage rights are granted. To request permission, please contact the repository owner.
+- Full legal text: https://creativecommons.org/licenses/by-nc/4.0/legalcode.en
+- For commercial licensing or any use beyond the NonCommercial terms, contact: neat.list5884@fastmail.com
 
-See the LICENSE file in this repository for the full terms.
+See the LICENSE file for the complete license terms.
+
+## Donations
+
+If this project helps you, consider supporting its development:
+
+- Now Payments:<a href="https://nowpayments.io/donation?api_key=a1bb5801-1614-440d-a0eb-bc8e4f56faf4" target="_blank" rel="noreferrer noopener">
+
+<img src="https://nowpayments.io/images/embeds/donation-button-white.svg" alt="Cryptocurrency & Bitcoin donation button by NOWPayments">
+</a>
+
+- Crypto:
+  - USDT TRC20: TNchkEFB1r7xU7Cyo3wYx8qDSiKjSFvSJc
+
+Thank you for your support! (Replace the placeholders above with your actual links/addresses.)
 
 ---
 
