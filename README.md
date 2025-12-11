@@ -2,7 +2,7 @@
 
 A small Flask API that aggregates call statistics from one or more Asterisk CDR MySQL databases. It exposes endpoints to get per-extension call time summaries and Answer-Seizure Ratio (ASR) by destination country code.
 
-Updated: 2025-12-05
+Updated: 2025-12-11
 
 ## Overview
 
@@ -27,10 +27,13 @@ System packages (Linux) that may be required for building MySQL client headers w
 
 ```
 .
-├─ app.py            # Flask app with routes and SQL queries
-├─ requirements.txt  # Python dependencies
-├─ Dockerfile        # Production container image (Gunicorn)
-└─ README.md         # This file
+├─ app.py             # Flask app with routes and SQL queries
+├─ requirements.txt   # Python dependencies
+├─ Dockerfile         # Production container image (Gunicorn)
+├─ install-docker.sh  # Helper installer for Docker Compose + Nginx (+ Certbot)
+├─ .env.example       # Example environment variables template
+├─ LICENSE            # License (CC BY-NC 4.0)
+└─ README.md          # This file
 ```
 
 ## Environment Variables
@@ -62,8 +65,8 @@ API_TOKEN=your-secure-token
 
 Notes
 - Do not commit real secrets. Ensure `.env` is excluded in your VCS if this is intended to be private. If `.env` is already tracked, rotate credentials immediately and remove secrets from history.
-- The database name used in queries is `asteriskcdrdb`. Ensure this schema exists on each host.
-- For ASR endpoint, the DB should provide a `country_codes` table and a scalar function `get_country_code(number)`. TODO: Document schema and function definition for `country_codes` and `get_country_code`.
+- The database schema name currently used by the queries is hardcoded as `asteriskcdrdb` in the code. Ensure this schema exists on each host. TODO: Make DB name configurable (note: `.env.example` shows `DBx_NAME` but code does not read it yet).
+- For ASR endpoint, the DB should provide a `country_codes` table and a scalar function `get_country_code(number)`. TODO: Document production-grade schema and function definition for `country_codes` and `get_country_code` (examples below are a starting point).
 
 ## Installation (local)
 
@@ -168,7 +171,7 @@ What the installer does
 Access URLs
 - HTTP mode: `http://localhost/` (port 80 exposed)
 - HTTPS mode: `https://your-domain/` with HTTP redirected to HTTPS
-- Health checks: `/health`
+- Health checks: TODO add `/health` endpoint in the app (not implemented in `app.py` as of this update)
 
 Notes
 - DNS: For HTTPS, point your domain (and `www`) to this server and allow inbound 80/443 before running `./start.sh` so Certbot can validate.
@@ -181,15 +184,20 @@ Notes
 All endpoints require a path token: `/api/v1/<token>/...`. The token must exactly match `API_TOKEN` from the environment; otherwise the API returns HTTP 401.
 
 Common query parameter for both endpoints:
-- `date`: One of `YYYY-MM-DD` (specific date), `week` (previous full work week per query in code), or `month` (previous calendar month). If omitted, defaults to the current date.
+- `date`: One of `YYYY-MM-DD` (specific date), `week` (previous full work week per query in code), or `month` (previous calendar month). If omitted and no custom range is provided, defaults to the current date.
 
 ### 1) Call statistics per extension
 
-```
-GET /api/v1/{token}/callstat?date=YYYY-MM-DD|week|month
-```
+Two modes are supported:
 
-Response example:
+- Predefined periods via `date`
+  - `GET /api/v1/{token}/callstat?date=YYYY-MM-DD|week|month`
+- Custom date-time range via `start` and `end`
+  - `GET /api/v1/{token}/callstat?start=YYYY-MM-DD[ HH:MM]&end=YYYY-MM-DD[ HH:MM]`
+    - Time part is optional. If omitted, `start` defaults to `00:00` and `end` defaults to `23:59` for their respective dates.
+    - Validation: both `start` and `end` must be provided together, and `start <= end`.
+
+Response example (predefined period):
 
 ```json
 {
@@ -209,9 +217,25 @@ Response example:
 }
 ```
 
+Response example (custom range):
+
+```json
+{
+  "data": [
+    { "cnum": "2001", "cnam": "John Doe", "call_count": 10, "total_call_time_minutes": 45.5, "long_calls_count": 3, "total_long_calls_minutes": 12.5, "unique_calls": 5 }
+  ],
+  "start": "2025-12-01 00:00:00",
+  "end":   "2025-12-03 23:59:00",
+  "date":  "2025-12-01 00:00 - 2025-12-03 23:59",
+  "errors": { "db-host": "error message" }
+}
+```
+
 Notes
 - Results combine data across the configured databases. If any DB fails, an `errors` object is included while still returning available data from others.
 - The SQL excludes 4-digit internal calls and focuses on `lastapp IN ('Dial','Busy','Congestion')` with non-failed dispositions.
+ - Sorting: results are sorted by `total_call_time_minutes` descending.
+ - Fields order in the JSON is preserved intentionally.
 
 ### 2) ASR by destination country code
 

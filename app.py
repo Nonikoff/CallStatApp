@@ -66,8 +66,15 @@ def get_connection(db_config):
     except Exception as e:
         logger.error(f"Failed to connect to {db_config['name']}: {str(e)}")
         return None
-def query_database(db_config, date_param):
-    """Query a single database for call statistics"""
+def query_database(db_config, date_param=None, start_dt=None, end_dt=None):
+    """Query a single database for call statistics
+
+    Args:
+        db_config: Database connection configuration.
+        date_param: 'week' | 'month' | specific date string 'YYYY-MM-DD' (kept for backward compatibility).
+        start_dt: start of range as 'YYYY-MM-DD HH:MM[:SS]'. Used when a custom date range is requested.
+        end_dt: end of range as 'YYYY-MM-DD HH:MM[:SS]'. Used when a custom date range is requested.
+    """
     connection = get_connection(db_config)
     if not connection:
         return {
@@ -77,7 +84,7 @@ def query_database(db_config, date_param):
     try:
         with connection.cursor() as cursor:
             # Determine which query to use based on date_param
-            if date_param.lower() == 'week':
+            if date_param and date_param.lower() == 'week':
                 query = """
                 SELECT
                     cdr.cnum,
@@ -114,7 +121,7 @@ def query_database(db_config, date_param):
                     total_call_time_minutes DESC
                 """
                 cursor.execute(query)
-            elif date_param.lower() == 'month':
+            elif date_param and date_param.lower() == 'month':
                 query = """
                 SELECT
                     cdr.cnum,
@@ -152,42 +159,80 @@ def query_database(db_config, date_param):
                 """
                 cursor.execute(query)
             else:
-                # Original query for specific date
-                query = """
-                SELECT
-                    cdr.cnum,
-                    IFNULL(cdr.cnam, '') AS cnam,
-                    COUNT(DISTINCT cdr.dst) AS unique_calls,
-                    COUNT(DISTINCT cdr.uniqueid) AS call_count,
-                    ROUND(SUM(CASE
-                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
-                        THEN cdr.billsec
-                        ELSE 0
-                    END) / 60, 2) AS total_call_time_minutes,
-                    COUNT(DISTINCT CASE
-                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
-                        THEN cdr.uniqueid
-                        ELSE NULL
-                    END) AS long_calls_count,
-                    ROUND(SUM(CASE
-                        WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
-                        THEN cdr.billsec
-                        ELSE 0
-                    END) / 60, 2) AS total_long_calls_minutes
-                FROM
-                    asteriskcdrdb.cdr
-                WHERE
-                    DATE(cdr.calldate) = %s
-                    AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
-                    AND cdr.lastapp IN ('Dial', 'Busy', 'Congestion')
-                    AND cdr.disposition != 'FAILED'
-                    AND cdr.dst NOT REGEXP '^[0-9]{4}$'
-                GROUP BY
-                    cdr.cnum, cdr.cnam
-                ORDER BY
-                    total_call_time_minutes DESC
-                """
-                cursor.execute(query, (date_param,))
+                # Query for specific date or custom date range
+                if start_dt and end_dt:
+                    query = """
+                    SELECT
+                        cdr.cnum,
+                        IFNULL(cdr.cnam, '') AS cnam,
+                        COUNT(DISTINCT cdr.dst) AS unique_calls,
+                        COUNT(DISTINCT cdr.uniqueid) AS call_count,
+                        ROUND(SUM(CASE
+                            WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
+                            THEN cdr.billsec
+                            ELSE 0
+                        END) / 60, 2) AS total_call_time_minutes,
+                        COUNT(DISTINCT CASE
+                            WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                            THEN cdr.uniqueid
+                            ELSE NULL
+                        END) AS long_calls_count,
+                        ROUND(SUM(CASE
+                            WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                            THEN cdr.billsec
+                            ELSE 0
+                        END) / 60, 2) AS total_long_calls_minutes
+                    FROM
+                        asteriskcdrdb.cdr
+                    WHERE
+                        cdr.calldate >= %s AND cdr.calldate <= %s
+                        AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
+                        AND cdr.lastapp IN ('Dial', 'Busy', 'Congestion')
+                        AND cdr.disposition != 'FAILED'
+                        AND cdr.dst NOT REGEXP '^[0-9]{4}$'
+                    GROUP BY
+                        cdr.cnum, cdr.cnam
+                    ORDER BY
+                        total_call_time_minutes DESC
+                    """
+                    cursor.execute(query, (start_dt, end_dt))
+                else:
+                    # Backward-compatible: single date means whole day
+                    query = """
+                    SELECT
+                        cdr.cnum,
+                        IFNULL(cdr.cnam, '') AS cnam,
+                        COUNT(DISTINCT cdr.dst) AS unique_calls,
+                        COUNT(DISTINCT cdr.uniqueid) AS call_count,
+                        ROUND(SUM(CASE
+                            WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED'
+                            THEN cdr.billsec
+                            ELSE 0
+                        END) / 60, 2) AS total_call_time_minutes,
+                        COUNT(DISTINCT CASE
+                            WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                            THEN cdr.uniqueid
+                            ELSE NULL
+                        END) AS long_calls_count,
+                        ROUND(SUM(CASE
+                            WHEN cdr.lastapp = 'Dial' AND cdr.disposition = 'ANSWERED' AND cdr.billsec > 90
+                            THEN cdr.billsec
+                            ELSE 0
+                        END) / 60, 2) AS total_long_calls_minutes
+                    FROM
+                        asteriskcdrdb.cdr
+                    WHERE
+                        DATE(cdr.calldate) = %s
+                        AND cdr.cnum >= 2000 AND cdr.cnum <= 3999
+                        AND cdr.lastapp IN ('Dial', 'Busy', 'Congestion')
+                        AND cdr.disposition != 'FAILED'
+                        AND cdr.dst NOT REGEXP '^[0-9]{4}$'
+                    GROUP BY
+                        cdr.cnum, cdr.cnam
+                    ORDER BY
+                        total_call_time_minutes DESC
+                    """
+                    cursor.execute(query, (date_param,))
 
             results = cursor.fetchall()
 
@@ -302,28 +347,92 @@ def combine_results(all_results):
 
 @app.route('/api/v1/<token>/callstat', methods=['GET'])
 def get_call_stats(token):
-    """Get call statistics from multiple databases for a specific date, week, or month"""
+    """Get call statistics from multiple databases for a specific date, week, month, or custom date-time range.
+
+    New support:
+      - Query params: start=YYYY-MM-DD[ HH:MM] and end=YYYY-MM-DD[ HH:MM]
+      - If HH:MM missing: start defaults to 00:00, end defaults to 23:59
+      - Validate start <= end
+      - When date='week' or 'month' is provided, existing aggregation logic is used unchanged.
+    """
     # Validate token
     if token != API_TOKEN:
         return jsonify({'error': 'Invalid token'}), 401
 
-    # Get date parameter
+    # Get parameters
     date_param = request.args.get('date')
+    start_param = request.args.get('start')
+    end_param = request.args.get('end')
 
-    # Validate date format or special keywords
-    if not date_param:
-        # Use current date if no date provided
-        date_param = datetime.now().strftime('%Y-%m-%d')
-    elif date_param.lower() not in ['week', 'month']:
+    # Helper to parse date or date-time with defaults for time
+    def _parse_dt(value: str, is_start: bool):
+        value = value.strip()
+        fmts = ['%Y-%m-%d %H:%M', '%Y-%m-%d']
+        last_exc = None
+        for fmt in fmts:
+            try:
+                dt = datetime.strptime(value, fmt)
+                # If format had no time (date only), set default time
+                if fmt == '%Y-%m-%d':
+                    if is_start:
+                        dt = dt.replace(hour=0, minute=0)
+                    else:
+                        dt = dt.replace(hour=23, minute=59)
+                return dt
+            except ValueError as e:
+                last_exc = e
+        raise ValueError(str(last_exc) if last_exc else 'Invalid date-time')
+
+    # Determine mode: week/month vs date range
+    use_week_or_month = bool(date_param and date_param.lower() in ['week', 'month'])
+
+    start_dt = None
+    end_dt = None
+    range_label = None
+
+    if use_week_or_month:
+        # No additional validation needed here; handled in query functions
+        pass
+    else:
+        # Build a date range
         try:
-            datetime.strptime(date_param, '%Y-%m-%d')
+            if start_param or end_param:
+                if not start_param or not end_param:
+                    return jsonify({'error': 'Both start and end must be provided when using a custom range'}), 400
+                start_dt_obj = _parse_dt(start_param, is_start=True)
+                end_dt_obj = _parse_dt(end_param, is_start=False)
+            else:
+                # Backward-compatible behavior with ?date=YYYY-MM-DD or missing both -> today
+                if not date_param:
+                    base_date = datetime.now().strftime('%Y-%m-%d')
+                else:
+                    # Validate plain date
+                    try:
+                        datetime.strptime(date_param, '%Y-%m-%d')
+                    except ValueError:
+                        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD, "week", or "month"'}), 400
+                    base_date = date_param
+                start_dt_obj = datetime.strptime(base_date + ' 00:00', '%Y-%m-%d %H:%M')
+                end_dt_obj = datetime.strptime(base_date + ' 23:59', '%Y-%m-%d %H:%M')
+
+            # Validate ordering
+            if start_dt_obj > end_dt_obj:
+                return jsonify({'error': 'Invalid range: start must be less than or equal to end'}), 400
+
+            # Format as strings with seconds for MySQL
+            start_dt = start_dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+            end_dt = end_dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+            range_label = f"{start_dt_obj.strftime('%Y-%m-%d %H:%M')} - {end_dt_obj.strftime('%Y-%m-%d %H:%M')}"
         except ValueError:
-            return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD or "week" or "month"'}), 400
+            return jsonify({'error': 'Invalid date-time format. Use YYYY-MM-DD HH:MM or YYYY-MM-DD'}), 400
 
     # Query all databases
     all_results = {}
     for db_config in db_configs:
-        all_results[db_config['name']] = query_database(db_config, date_param)
+        if use_week_or_month:
+            all_results[db_config['name']] = query_database(db_config, date_param=date_param)
+        else:
+            all_results[db_config['name']] = query_database(db_config, date_param=None, start_dt=start_dt, end_dt=end_dt)
 
     # Combine results
     combined_data, errors = combine_results(all_results)
@@ -343,10 +452,18 @@ def get_call_stats(token):
         reordered_data.append(reordered_item)
     
     # Prepare response with OrderedDict
-    response = OrderedDict([
-        ('data', reordered_data),
-        ('date', date_param)
-    ])
+    if use_week_or_month:
+        response = OrderedDict([
+            ('data', reordered_data),
+            ('date', date_param)
+        ])
+    else:
+        response = OrderedDict([
+            ('data', reordered_data),
+            ('start', start_dt),
+            ('end', end_dt),
+            ('date', range_label)
+        ])
 
     if errors:
         response['errors'] = errors
