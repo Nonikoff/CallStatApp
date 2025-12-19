@@ -622,3 +622,90 @@ Thank you for your support!
 ### Appendix: Original Ubuntu deployment guide
 
 The repository previously included a detailed step-by-step Ubuntu deployment guide with Supervisor, Nginx, SSL, monitoring, backups, and maintenance commands. Those steps remain generally applicable; review and adapt them to your environment. Ensure that commands reference `app:app` and port `8000` as shown above and that secrets are managed securely (do not keep real credentials in `.env` under version control).
+
+### Google Sheets (Apps Script) client
+
+This repository includes a Google Apps Script client (`appscript.gs`) to import CallStatApp data into Google Sheets. Sensitive values (API host and key) are NOT hard-coded. You configure them via Script Properties in your Apps Script project.
+
+#### What you’ll get
+- Import call statistics for a given date, a date range, last week, last month, or an ASR report.
+- Populate the current sheet starting at row 7 with neatly ordered columns.
+- Optional UI pickers and safe alerts, with sensible behavior when run by triggers.
+
+#### 1) Add the script to your Sheet
+1. Open your Google Sheet.
+2. Extensions -> Apps Script.
+3. Create a new script file and paste the contents of `appscript.gs` from this repo.
+4. Press Save.
+
+#### 2) Configure Script Properties (no secrets in code)
+
+In the Apps Script editor: 
+Follow these steps to add your missing properties:
+1. On the left-hand sidebar, click the Project Settings icon (it looks like a gear ⚙️). 
+2. Scroll down to the Script Properties section.
+
+add the following keys:
+
+- `API_BASE_URL` — Example: `https://your.api.host` (no trailing slash)
+- `API_VERSION` — Example: `v1`
+- `API_KEY` — Your token/UUID provided by your backend (do NOT put it in the code)
+
+Click Save script properties
+ 
+The script composes URLs like:
+```
+{API_BASE_URL}/api/{API_VERSION}/{API_KEY}/{resource}?{query}
+```
+For example, the call stats endpoint is `callstat`, and the ASR endpoint is `asrstat`.
+
+#### 3) Authorize the script
+The first time you run any function, Google will ask for authorization. Accept the required scopes.
+
+#### 4) Available functions you can run
+- `showDatePickerAndRunQuery()`
+  - Shows a prompt to enter a date (`YYYY-MM-DD`) and imports data for that day.
+
+- `autoImportCallStats()`
+  - Imports today’s call stats (useful for a daily trigger).
+
+- `importWeeklyCallStats()`
+  - Imports the last week’s stats.
+
+- `importMonthlyCallStats()`
+  - Imports the last month’s stats.
+
+- `showDateTimePickerAndRunQuery()`
+  - Shows a dialog to pick a start and end date/time and imports that range.
+
+- `importCallStatsWithDateRange(startDateTime, endDateTime)`
+  - Programmatic import for a custom range. Example:
+  ```
+  importCallStatsWithDateRange('2025-01-01 00:00', '2025-01-07 23:59');
+  ```
+
+- `importAsrStats()`
+  - Imports ASR statistics and creates a filter on the imported range.
+
+- `importLastShiftData()`
+  - Convenience helper importing from yesterday 08:00 to today 04:00.
+
+All functions write to the active sheet. The scripts expect headers/data starting at row 7 and will clear prior content from row 7 downward before importing.
+
+#### 5) Optional: Add buttons to your Sheet
+1. Insert -> Drawing; create a shape and save.
+2. Click the three dots on the shape -> Assign script.
+3. Enter one of the function names (e.g., `showDatePickerAndRunQuery`).
+
+#### 6) Optional: Time-driven triggers
+1. In Apps Script: Triggers (clock icon) -> Add Trigger.
+2. Choose a function (e.g., `autoImportCallStats`) and schedule.
+3. Save and authorize if prompted.
+
+#### Troubleshooting
+- Error: “Missing Script Properties …”
+  - Ensure `API_BASE_URL`, `API_VERSION`, and `API_KEY` are set in Project properties.
+- Nothing imported
+  - Check your date/range and that the backend returns `data` in the expected shape.
+- UI alert not shown when using triggers
+  - That’s expected: the script logs messages instead of UI alerts when run in background.
